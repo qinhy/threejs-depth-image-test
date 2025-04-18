@@ -26,37 +26,53 @@
 			}
 		</script>
 
-    <script id="post-frag" type="x-shader/x-fragment">
-			#include <packing>
+    <script id="depth-vis-frag" type="x-shader/x-fragment">
+        varying vec2 vUv;
+    
+        uniform sampler2D tDepth;
+        uniform float cameraNear;
+        uniform float cameraFar;
+    
+        #include <packing>
+    
+        float readRealDepth(sampler2D depthSampler, vec2 coord) {
+            float fragCoordZ = texture2D(depthSampler, coord).x;
+            float viewZ = perspectiveDepthToViewZ(fragCoordZ, cameraNear, cameraFar);
+            float depthMeters = -viewZ;
+            return depthMeters / cameraFar;
+        }
+    
+        void main() {
+            float depth = readRealDepth(tDepth, vUv);
+            gl_FragColor.rgb = vec3(1.0 - depth);
+            gl_FragColor.a = 1.0;
+        }
+    </script>
 
-			varying vec2 vUv;
-			uniform sampler2D tDiffuse;
-			uniform sampler2D tDepth;
-			uniform float cameraNear;
-			uniform float cameraFar;
+    <script id="export-pos-frag" type="x-shader/x-fragment">
+        varying vec2 vUv;
+
+        uniform sampler2D tDepth;
+        uniform float cameraNear;
+        uniform float cameraFar;
+        uniform mat4 projectionMatrixInverse;
+        uniform mat4 viewMatrixInverse;
+
+        void main() {
+            float depth = texture2D(tDepth, vUv).x;
+            float z = depth * 2.0 - 1.0;
+
+            vec4 clipPosition = vec4(vUv * 2.0 - 1.0, z, 1.0);
+            vec4 viewPosition = projectionMatrixInverse * clipPosition;
+            viewPosition /= viewPosition.w;
+
+            vec4 worldPosition = viewMatrixInverse * viewPosition;
+
+            gl_FragColor = vec4(worldPosition.xyz, 1.0);
+        }
+    </script>
 
 
-			float readDepth( sampler2D depthSampler, vec2 coord ) {
-				float fragCoordZ = texture2D( depthSampler, coord ).x;
-				float viewZ = perspectiveDepthToViewZ( fragCoordZ, cameraNear, cameraFar );
-				return viewZToOrthographicDepth( viewZ, cameraNear, cameraFar );
-			}
-
-			float readRealDepth( sampler2D depthSampler, vec2 coord ) {
-                float fragCoordZ = texture2D(tDepth, vUv).x;
-                float viewZ = perspectiveDepthToViewZ(fragCoordZ, cameraNear, cameraFar); // viewZ is negative
-                float depthMeters = -viewZ; // convert to positive real distance
-                return depthMeters/cameraFar;
-			}
-
-			void main() {
-				//vec3 diffuse = texture2D( tDiffuse, vUv ).rgb;
-				float depth = readRealDepth( tDepth, vUv );
-
-				gl_FragColor.rgb = 1.0 - vec3( depth );
-				gl_FragColor.a = 1.0;
-			}
-		</script>
 
 </head>
 
@@ -98,7 +114,7 @@
 
         let camera, scene, renderer, controls, stats;
         let target;
-        let postScene, postCamera, postMaterial;
+        let postScene, postCamera, pcdMaterial, depthVisMaterial;
 
         const params = {
             format: THREE.DepthFormat,
@@ -130,11 +146,11 @@
             const fov = 70;
             const near = 0.1;
             const far = 10;
-            
+
             const fov_rad = fov * (Math.PI / 180);
             const fy = height / (2 * Math.tan(fov_rad / 2));
             const fx = fy * aspect;
-            
+
             console.log('Camera Parameters:');
             console.log('Width:', width);
             console.log('Height:', height);
@@ -202,18 +218,34 @@
 
             // Setup post processing stage
             postCamera = new THREE.OrthographicCamera(- 1, 1, 1, - 1, 0, 1);
-            postMaterial = new THREE.ShaderMaterial({
+
+            depthVisMaterial = new THREE.ShaderMaterial({
                 vertexShader: document.querySelector('#post-vert').textContent.trim(),
-                fragmentShader: document.querySelector('#post-frag').textContent.trim(),
+                fragmentShader: document.querySelector('#depth-vis-frag').textContent.trim(),
                 uniforms: {
                     cameraNear: { value: camera.near },
                     cameraFar: { value: camera.far },
+                    tDepth: { value: null },
                     tDiffuse: { value: null },
-                    tDepth: { value: null }
                 }
             });
+
+            pcdMaterial = new THREE.ShaderMaterial({
+                vertexShader: document.querySelector('#post-vert').textContent.trim(),
+                fragmentShader: document.querySelector('#export-pos-frag').textContent.trim(),
+                uniforms: {
+                    tDiffuse: { value: null },
+                    tDepth: { value: null },
+                    cameraNear: { value: camera.near },
+                    cameraFar: { value: camera.far },
+                    projectionMatrixInverse: { value: new THREE.Matrix4() },
+                    viewMatrixInverse: { value: new THREE.Matrix4() }
+                }
+            });
+            // Setup post FX (for display only)
+            postCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
             const postPlane = new THREE.PlaneGeometry(2, 2);
-            const postQuad = new THREE.Mesh(postPlane, postMaterial);
+            const postQuad = new THREE.Mesh(postPlane, depthVisMaterial);// <- for display only
             postScene = new THREE.Scene();
             postScene.add(postQuad);
 
@@ -221,8 +253,8 @@
 
         function setupScene() {
             scene = new THREE.Scene();
-            addPlane(scene);
-            // addDonut(scene);
+            // addPlane(scene);
+            addDonut(scene);
             // addBunny(scene);
             // addTorusKnotGeometry(scene);
         }
@@ -241,8 +273,8 @@
             const torus = new THREE.Mesh(geometry, material);
             scene.add(torus);
         }
-        
-        function addBunny(scene){
+
+        function addBunny(scene) {
             const loader = new PLYLoader();
             loader.load('./bunny.ply', function (geometry) {
                 geometry.computeVertexNormals();
@@ -256,7 +288,7 @@
             });
         }
 
-        function addTorusKnotGeometry(scene){            
+        function addTorusKnotGeometry(scene) {
             const geometry = new THREE.TorusKnotGeometry(1, 0.3, 128, 64);
             const material = new THREE.MeshBasicMaterial({ color: 'blue' });
 
@@ -300,8 +332,12 @@
             renderer.render(scene, camera);
 
             // render post FX
-            postMaterial.uniforms.tDiffuse.value = target.texture;
-            postMaterial.uniforms.tDepth.value = target.depthTexture;
+            // postMaterial.uniforms.tDiffuse.value = target.texture;
+            pcdMaterial.uniforms.tDepth.value = target.depthTexture;
+            pcdMaterial.uniforms.projectionMatrixInverse.value.copy(camera.projectionMatrix).invert();
+            pcdMaterial.uniforms.viewMatrixInverse.value.copy(camera.matrixWorld);
+
+            depthVisMaterial.uniforms.tDepth.value = target.depthTexture;
 
             renderer.setRenderTarget(null);
             renderer.render(postScene, postCamera);
@@ -328,8 +364,8 @@
                 readTarget.texture.generateMipmaps = false;
 
                 // Re-render the post scene into the new target
-                postMaterial.uniforms.tDiffuse.value = target.texture;
-                postMaterial.uniforms.tDepth.value = target.depthTexture;
+                pcdMaterial.uniforms.tDiffuse.value = target.texture;
+                pcdMaterial.uniforms.tDepth.value = target.depthTexture;
 
                 renderer.setRenderTarget(readTarget);
                 renderer.render(postScene, postCamera);
@@ -379,12 +415,7 @@
 
         }
 
-        function linearizeDepth(depth, near, far) {
-            const z = depth * 2.0 - 1.0; // Convert [0,1] depth to NDC
-            return (2.0 * near * far) / (far + near - z * (far - near));
-        }
-        
-        function savePCD() {
+        function savePCD(far=5.0, step = 4) { // Try 2, 4, 8, etc. Higher = fewer points
             const width = target.width;
             const height = target.height;
 
@@ -392,51 +423,52 @@
             document.getElementById('downloadLink').innerHTML = '';
 
             setTimeout(() => {
-                // Render post-processing (which encodes linear depth into RGB)
-                const readTarget = new THREE.WebGLRenderTarget(width, height);
-                readTarget.texture.minFilter = THREE.NearestFilter;
-                readTarget.texture.magFilter = THREE.NearestFilter;
-                readTarget.texture.generateMipmaps = false;
+                const exportMaterial = new THREE.ShaderMaterial({
+                    vertexShader: document.querySelector('#post-vert').textContent.trim(),
+                    fragmentShader: document.querySelector('#export-pos-frag').textContent.trim(),
+                    uniforms: {
+                        tDepth: { value: target.depthTexture },
+                        cameraNear: { value: camera.near },
+                        cameraFar: { value: camera.far },
+                        projectionMatrixInverse: { value: new THREE.Matrix4().copy(camera.projectionMatrix).invert() },
+                        viewMatrixInverse: { value: new THREE.Matrix4().copy(camera.matrixWorld) }
+                    }
+                });
 
-                postMaterial.uniforms.tDiffuse.value = target.texture;
-                postMaterial.uniforms.tDepth.value = target.depthTexture;
+                const readTarget = new THREE.WebGLRenderTarget(width, height, {
+                    type: THREE.FloatType,
+                    format: THREE.RGBAFormat,
+                    depthBuffer: false,
+                    stencilBuffer: false
+                });
+
+                const exportScene = new THREE.Scene();
+                const quad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), exportMaterial);
+                exportScene.add(quad);
 
                 renderer.setRenderTarget(readTarget);
-                renderer.render(postScene, postCamera);
+                renderer.render(exportScene, postCamera);
                 renderer.setRenderTarget(null);
 
-                // Read pixels
-                const pixels = new Uint8Array(width * height * 4);
+                const pixels = new Float32Array(width * height * 4);
                 renderer.readRenderTargetPixels(readTarget, 0, 0, width, height, pixels);
-
-                // Inverse projection + view matrices
-                const projInv = new THREE.Matrix4().copy(camera.projectionMatrix).invert();
-                const viewInv = new THREE.Matrix4().copy(camera.matrixWorld);
 
                 const points = [];
 
-                for (let y = 0; y < height; y++) {
-                    for (let x = 0; x < width; x++) {
+                for (let y = 0; y < height; y += step) {
+                    for (let x = 0; x < width; x += step) {
                         const i = (x + (height - y - 1) * width) * 4;
 
-                        // Decode grayscale depth (from red channel)
-                        const depth = 1.0 - (pixels[i] / 255); // match shader: 1.0 - depth
-                        if (depth === 1.0) continue; // skip background
+                        const px = pixels[i];
+                        const py = pixels[i + 1];
+                        if(py>far){
+                            continue
+                        }
+                        const pz = pixels[i + 2];
 
-                        // NDC space
-                        const ndc = new THREE.Vector3(
-                            (x / width) * 2 - 1,
-                            (y / height) * 2 - 1,
-                            depth * 2 - 1
-                        );
-
-                        // Unproject
-                        const clipPos = new THREE.Vector4(ndc.x, ndc.y, ndc.z*2, 1.0);
-                        clipPos.applyMatrix4(projInv);
-                        clipPos.divideScalar(clipPos.w);
-                        clipPos.applyMatrix4(viewInv);
-
-                        points.push(`${clipPos.x} ${clipPos.y} ${clipPos.z}`);
+                        if (Number.isFinite(px) && Number.isFinite(py) && Number.isFinite(pz)) {
+                            points.push(`${px} ${py} ${pz}`);
+                        }
                     }
                 }
 
