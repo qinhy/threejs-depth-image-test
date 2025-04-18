@@ -58,7 +58,7 @@
         Stores render target depth in a texture attachment.<br />
         Created by <a href="http://twitter.com/mattdesl" target="_blank" rel="noopener">@mattdesl</a>.
 
-        <div id="progress" style="display:none; margin: 10px; font-family: sans-serif;">Exporting depth map...</div>
+        <div id="progress" style="display:none; margin: 10px; font-family: sans-serif;">Exporting ...</div>
         <div id="downloadLink"></div>
 
 
@@ -72,7 +72,8 @@
 			{
 				"imports": {
 					"three": "./three.js-r175/build/three.module.js",
-					"three/addons/": "./three.js-r175/examples/jsm/"
+					"three/addons/": "./three.js-r175/examples/jsm/",
+                    "three/addons/loaders/PLYLoader.js": "./three.js-r175/examples/jsm/loaders/PLYLoader.js"
 				}
 			}
 		</script>
@@ -85,6 +86,7 @@
 
         import { GUI } from 'three/addons/libs/lil-gui.module.min.js';
         import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+        import { PLYLoader } from 'three/addons/loaders/PLYLoader.js';
 
         let camera, scene, renderer, controls, stats;
         let target;
@@ -92,7 +94,7 @@
 
         const params = {
             format: THREE.DepthFormat,
-            type: THREE.UnsignedShortType,
+            type: THREE.FloatType,
             samples: 0,
         };
 
@@ -114,7 +116,7 @@
             stats = new Stats();
             document.body.appendChild(stats.dom);
 
-            camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.01, 50);
+            camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.1, 10); // was 0.01 to 50
             camera.position.z = 4;
 
             controls = new OrbitControls(camera, renderer.domElement);
@@ -139,6 +141,7 @@
             gui.add(params, 'type', types).onChange(setupRenderTarget);
             gui.add(params, 'samples', 0, 16, 1).onChange(setupRenderTarget);
             gui.add({ saveDepth: saveDepthMap }, 'saveDepth').name('Export Depth Map');
+            gui.add({ savePCD: savePCD }, 'savePCD').name('Export PCD');
             gui.open();
 
         }
@@ -187,9 +190,26 @@
         }
 
         function setupScene() {
-
             scene = new THREE.Scene();
+            addBunny(scene);
+            addTorusKnotGeometry(scene);
+        }
+        
+        function addBunny(scene){
+            const loader = new PLYLoader();
+            loader.load('./bunny.ply', function (geometry) {
+                geometry.computeVertexNormals();
 
+                const material = new THREE.MeshBasicMaterial({ color: 0x6699ff, wireframe: false });
+                const mesh = new THREE.Mesh(geometry, material);
+
+                mesh.scale.set(10, 10, 10); // Scale up the bunny
+                mesh.rotation.y = Math.PI; // Optional: flip direction
+                scene.add(mesh);
+            });
+        }
+
+        function addTorusKnotGeometry(scene){            
             const geometry = new THREE.TorusKnotGeometry(1, 0.3, 128, 64);
             const material = new THREE.MeshBasicMaterial({ color: 'blue' });
 
@@ -212,7 +232,6 @@
                 scene.add(mesh);
 
             }
-
         }
 
         function onWindowResize() {
@@ -313,9 +332,97 @@
 
         }
 
-        // window.addEventListener('keydown', (e) => {
-        //     if (e.key === 'd') saveDepthMap(); // Press 'd' to export
-        // });
+        function linearizeDepth(depth, near, far) {
+            const z = depth * 2.0 - 1.0; // Convert [0,1] depth to NDC
+            return (2.0 * near * far) / (far + near - z * (far - near));
+        }
+        
+        function savePCD() {
+            const width = target.width;
+            const height = target.height;
+
+            document.getElementById('progress').style.display = 'block';
+            document.getElementById('downloadLink').innerHTML = '';
+
+            setTimeout(() => {
+                // Render post-processing (which encodes linear depth into RGB)
+                const readTarget = new THREE.WebGLRenderTarget(width, height);
+                readTarget.texture.minFilter = THREE.NearestFilter;
+                readTarget.texture.magFilter = THREE.NearestFilter;
+                readTarget.texture.generateMipmaps = false;
+
+                postMaterial.uniforms.tDiffuse.value = target.texture;
+                postMaterial.uniforms.tDepth.value = target.depthTexture;
+
+                renderer.setRenderTarget(readTarget);
+                renderer.render(postScene, postCamera);
+                renderer.setRenderTarget(null);
+
+                // Read pixels
+                const pixels = new Uint8Array(width * height * 4);
+                renderer.readRenderTargetPixels(readTarget, 0, 0, width, height, pixels);
+
+                // Inverse projection + view matrices
+                const projInv = new THREE.Matrix4().copy(camera.projectionMatrix).invert();
+                const viewInv = new THREE.Matrix4().copy(camera.matrixWorld);
+
+                const points = [];
+
+                for (let y = 0; y < height; y++) {
+                    for (let x = 0; x < width; x++) {
+                        const i = (x + (height - y - 1) * width) * 4;
+
+                        // Decode grayscale depth (from red channel)
+                        const depth = 1.0 - (pixels[i] / 255); // match shader: 1.0 - depth
+                        if (depth === 1.0) continue; // skip background
+
+                        // NDC space
+                        const ndc = new THREE.Vector3(
+                            (x / width) * 2 - 1,
+                            (y / height) * 2 - 1,
+                            depth * 2 - 1
+                        );
+
+                        // Unproject
+                        const clipPos = new THREE.Vector4(ndc.x, ndc.y, ndc.z*2, 1.0);
+                        clipPos.applyMatrix4(projInv);
+                        clipPos.divideScalar(clipPos.w);
+                        clipPos.applyMatrix4(viewInv);
+
+                        points.push(`${clipPos.x} ${clipPos.y} ${clipPos.z}`);
+                    }
+                }
+
+                const header = [
+                    'VERSION .7',
+                    'FIELDS x y z',
+                    'SIZE 4 4 4',
+                    'TYPE F F F',
+                    'COUNT 1 1 1',
+                    `WIDTH ${points.length}`,
+                    'HEIGHT 1',
+                    'VIEWPOINT 0 0 0 1 0 0 0',
+                    `POINTS ${points.length}`,
+                    'DATA ascii'
+                ];
+
+                const pcdContent = header.concat(points).join('\n');
+                const blob = new Blob([pcdContent], { type: 'text/plain' });
+                const url = URL.createObjectURL(blob);
+
+                const link = document.createElement('a');
+                link.href = url;
+                link.download = 'pointcloud.pcd';
+                link.textContent = 'Click here to download PCD';
+                link.style.display = 'inline-block';
+                link.style.marginTop = '10px';
+                link.style.fontFamily = 'sans-serif';
+
+                document.getElementById('downloadLink').appendChild(link);
+                document.getElementById('progress').style.display = 'none';
+
+            }, 100);
+        }
 
     </script>
 
