@@ -58,6 +58,10 @@
         Stores render target depth in a texture attachment.<br />
         Created by <a href="http://twitter.com/mattdesl" target="_blank" rel="noopener">@mattdesl</a>.
 
+        <div id="progress" style="display:none; margin: 10px; font-family: sans-serif;">Exporting depth map...</div>
+        <div id="downloadLink"></div>
+
+
         <div id="error" style="display: none;">
             Your browser does not support <strong>WEBGL_depth_texture</strong>.<br /><br />
             This demo will not work.
@@ -246,49 +250,67 @@
             const width = target.width;
             const height = target.height;
 
-            // Create a new render target to render the depth visualization
-            const readTarget = new THREE.WebGLRenderTarget(width, height);
-            readTarget.texture.minFilter = THREE.NearestFilter;
-            readTarget.texture.magFilter = THREE.NearestFilter;
-            readTarget.texture.generateMipmaps = false;
+            document.getElementById('progress').style.display = 'block';
+            document.getElementById('downloadLink').innerHTML = '';
 
-            // Render the depth visualization to readTarget
-            postMaterial.uniforms.tDiffuse.value = target.texture;
-            postMaterial.uniforms.tDepth.value = target.depthTexture;
+            // Delay to let UI update before blocking render/read
+            setTimeout(() => {
 
-            renderer.setRenderTarget(readTarget);
-            renderer.render(postScene, postCamera);
-            renderer.setRenderTarget(null);
+                const readTarget = new THREE.WebGLRenderTarget(width, height);
+                readTarget.texture.minFilter = THREE.NearestFilter;
+                readTarget.texture.magFilter = THREE.NearestFilter;
+                readTarget.texture.generateMipmaps = false;
 
-            // Read pixels from the GPU
-            const pixels = new Uint8Array(width * height * 4);
-            renderer.readRenderTargetPixels(readTarget, 0, 0, width, height, pixels);
+                // Re-render the post scene into the new target
+                postMaterial.uniforms.tDiffuse.value = target.texture;
+                postMaterial.uniforms.tDepth.value = target.depthTexture;
 
-            // Flip Y and draw to canvas
-            const canvas = document.createElement('canvas');
-            canvas.width = width;
-            canvas.height = height;
-            const ctx = canvas.getContext('2d');
-            const imageData = ctx.createImageData(width, height);
+                renderer.setRenderTarget(readTarget);
+                renderer.render(postScene, postCamera);
+                renderer.setRenderTarget(null);
 
-            for (let y = 0; y < height; y++) {
-                for (let x = 0; x < width; x++) {
-                    const srcIdx = (x + (height - y - 1) * width) * 4;
-                    const dstIdx = (x + y * width) * 4;
-                    imageData.data[dstIdx] = pixels[srcIdx];
-                    imageData.data[dstIdx + 1] = pixels[srcIdx + 1];
-                    imageData.data[dstIdx + 2] = pixels[srcIdx + 2];
-                    imageData.data[dstIdx + 3] = 255; // opaque
+                // Read pixels from GPU
+                const pixels = new Uint8Array(width * height * 4);
+                renderer.readRenderTargetPixels(readTarget, 0, 0, width, height, pixels);
+
+                // Create canvas and flip Y
+                const canvas = document.createElement('canvas');
+                canvas.width = width;
+                canvas.height = height;
+                const ctx = canvas.getContext('2d');
+                const imageData = ctx.createImageData(width, height);
+
+                for (let y = 0; y < height; y++) {
+                    for (let x = 0; x < width; x++) {
+                        const srcIdx = (x + (height - y - 1) * width) * 4;
+                        const dstIdx = (x + y * width) * 4;
+                        imageData.data[dstIdx] = pixels[srcIdx];
+                        imageData.data[dstIdx + 1] = pixels[srcIdx + 1];
+                        imageData.data[dstIdx + 2] = pixels[srcIdx + 2];
+                        imageData.data[dstIdx + 3] = 255;
+                    }
                 }
-            }
 
-            ctx.putImageData(imageData, 0, 0);
+                ctx.putImageData(imageData, 0, 0);
 
-            // Export as image
-            const link = document.createElement('a');
-            link.download = 'depth-map.png';
-            link.href = canvas.toDataURL();
-            link.click();
+                // Create downloadable image link
+                canvas.toBlob((blob) => {
+                    const url = URL.createObjectURL(blob);
+                    const link = document.createElement('a');
+                    link.href = url;
+                    link.download = 'depth-map.png';
+                    link.textContent = 'Click here to download depth map';
+                    link.style.display = 'inline-block';
+                    link.style.marginTop = '10px';
+                    link.style.fontFamily = 'sans-serif';
+
+                    document.getElementById('downloadLink').appendChild(link);
+                    document.getElementById('progress').style.display = 'none';
+
+                }, 'image/png');
+
+            }, 100); // small delay lets the DOM update "Exporting..." before blocking
+
         }
 
         // window.addEventListener('keydown', (e) => {
