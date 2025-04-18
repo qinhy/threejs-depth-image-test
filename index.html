@@ -415,7 +415,7 @@
 
         }
 
-        function savePCD(far=5.0, step = 4) { // Try 2, 4, 8, etc. Higher = fewer points
+        function savePCD(step = 4) { // Try 2, 4, 8, etc. Higher = fewer points
             const width = target.width;
             const height = target.height;
 
@@ -461,9 +461,6 @@
 
                         const px = pixels[i];
                         const py = pixels[i + 1];
-                        if(py>far){
-                            continue
-                        }
                         const pz = pixels[i + 2];
 
                         if (Number.isFinite(px) && Number.isFinite(py) && Number.isFinite(pz)) {
