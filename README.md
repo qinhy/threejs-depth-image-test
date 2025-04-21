@@ -53,6 +53,10 @@ threejs-depth-image-test/
             ├── loaders/
             └── libs/
 ```
+### Gallery
+![](./imgs/image-depth.png)
+![](./imgs/image-rgb.png)
+![](./imgs/image-pcd.png)
 
 ### Notes
 
