@@ -36,39 +36,39 @@
         #include <packing>
     
         float readRealDepth(sampler2D depthSampler, vec2 coord) {
-            float fragCoordZ = texture2D(depthSampler, coord).x;
-            float viewZ = perspectiveDepthToViewZ(fragCoordZ, cameraNear, cameraFar);
-            float depthMeters = -viewZ;
-            return depthMeters / cameraFar;
+        // Optimized depth reading function using direct calculations
+        float readRealDepth() {
+            float fragCoordZ = texture2D(tDepth, vUv).x;
+            return -perspectiveDepthToViewZ(fragCoordZ, cameraNear, cameraFar) / cameraFar;
         }
     
         void main() {
-            float depth = readRealDepth(tDepth, vUv);
-            gl_FragColor.rgb = vec3(1.0 - depth);
-            gl_FragColor.a = 1.0;
+            gl_FragColor = vec4(vec3(1.0 - readRealDepth()), 1.0);
         }
     </script>
 
     <script id="export-pos-frag" type="x-shader/x-fragment">
         varying vec2 vUv;
-
         uniform sampler2D tDepth;
         uniform float cameraNear;
         uniform float cameraFar;
         uniform mat4 projectionMatrixInverse;
-        uniform mat4 viewMatrixInverse;
-
+    
+        #include <packing>
+    
         void main() {
-            float depth = texture2D(tDepth, vUv).x;
-            float z = depth * 2.0 - 1.0;
-
-            vec4 clipPosition = vec4(vUv * 2.0 - 1.0, z, 1.0);
-            vec4 viewPosition = projectionMatrixInverse * clipPosition;
-            viewPosition /= viewPosition.w;
-
-            vec4 worldPosition = viewMatrixInverse * viewPosition;
-
-            gl_FragColor = vec4(worldPosition.xyz, 1.0);
+            float fragCoordZ = texture2D(tDepth, vUv).x;
+            float viewZ = perspectiveDepthToViewZ(fragCoordZ, cameraNear, cameraFar);
+    
+            if (-viewZ > cameraFar * 0.95) {
+                discard;
+            }
+    
+            vec4 clipPos = vec4(vUv * 2.0 - 1.0, fragCoordZ * 2.0 - 1.0, 1.0);
+            vec4 viewPos = projectionMatrixInverse * clipPos;
+    
+            // Output view-space position
+            gl_FragColor = viewPos / viewPos.w;
         }
     </script>
 
@@ -112,393 +112,521 @@
         import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
         import { PLYLoader } from 'three/addons/loaders/PLYLoader.js';
 
-        let camera, scene, renderer, controls, stats;
-        let target;
-        let postScene, postCamera, pcdMaterial, depthVisMaterial;
+        class SceneSetup {
+            constructor(container) {
+                this.container = container;
+                this.camera = null;
+                this.scene = null;
+                this.controls = null;
+                this.renderer = null; // Will be set by App
+                this._setupCamera();
+                this._setupScene();
+            }
 
-        const params = {
-            format: THREE.DepthFormat,
-            type: THREE.FloatType,
-            samples: 0,
-        };
+            _setupCamera() {
+                const width = window.innerWidth;
+                const height = window.innerHeight;
+                const aspect = width / height;
+                const fov = 70;
+                const near = 0.1;
+                const far = 10;
 
-        const formats = { DepthFormat: THREE.DepthFormat, DepthStencilFormat: THREE.DepthStencilFormat };
-        const types = { UnsignedShortType: THREE.UnsignedShortType, UnsignedIntType: THREE.UnsignedIntType, FloatType: THREE.FloatType };
+                this.camera = new THREE.PerspectiveCamera(fov, aspect, near, far);
+                this.camera.position.z = 4;
 
-        init();
+                console.log('Camera Parameters:');
+                console.log('Width:', width);
+                console.log('Height:', height);
+                console.log('Aspect Ratio:', aspect);
+                console.log('Field of View (degrees):', fov);
+                console.log('Near Plane:', near);
+                console.log('Far Plane:', far);
+            }
+            _setupScene() {
+                this.scene = new THREE.Scene();
+                
+                // Add objects here or provide methods to add them
+                // this._addDonut();
+                this._addPlane();
+                // this._addBunny();
+                // this._addTorusKnotGeometry();
+            }
 
-        function init() {
+            _addPlane() {
+                const geometry = new THREE.PlaneGeometry(1, 1);
+                const material = new THREE.MeshBasicMaterial({ color: 'blue' });
+                const plane = new THREE.Mesh(geometry, material);
+                plane.rotation.x = -Math.PI / 2;
+                this.scene.add(plane);
+            }
 
-            renderer = new THREE.WebGLRenderer();
-            renderer.setPixelRatio(window.devicePixelRatio);
-            renderer.setSize(window.innerWidth, window.innerHeight);
-            renderer.setAnimationLoop(animate);
-            document.body.appendChild(renderer.domElement);
+            _addDonut() {
+                const geometry = new THREE.TorusGeometry(1, 0.2, 16, 100);
+                const material = new THREE.MeshBasicMaterial({ color: 'blue' });
+                const torus = new THREE.Mesh(geometry, material);
+                this.scene.add(torus);
+            }
 
-            //
+            _addBunny() {
+                const loader = new PLYLoader();
+                loader.load('./bunny.ply', (geometry) => {
+                    geometry.computeVertexNormals();
+                    const material = new THREE.MeshBasicMaterial({ color: 0x6699ff, wireframe: false });
+                    const mesh = new THREE.Mesh(geometry, material);
+                    mesh.scale.set(10, 10, 10);
+                    mesh.rotation.y = Math.PI;
+                    this.scene.add(mesh);
+                });
+            }
 
-            stats = new Stats();
-            document.body.appendChild(stats.dom);
-
-            const width = window.innerWidth;
-            const height = window.innerHeight;
-            const aspect = width / height;
-            const fov = 70;
-            const near = 0.1;
-            const far = 10;
-
-            const fov_rad = fov * (Math.PI / 180);
-            const fy = height / (2 * Math.tan(fov_rad / 2));
-            const fx = fy * aspect;
-
-            console.log('Camera Parameters:');
-            console.log('Width:', width);
-            console.log('Height:', height);
-            console.log('Aspect Ratio:', aspect);
-            console.log('Field of View (degrees):', fov);
-            console.log('Field of View (radians):', fov_rad);
-            console.log('Near Plane:', near);
-            console.log('Far Plane:', far);
-            console.log('Focal Length Y (fy):', fy);
-            console.log('Focal Length X (fx):', fx);
-
-            camera = new THREE.PerspectiveCamera(fov, aspect, near, far);
-            camera.position.z = 4;
-
-            controls = new OrbitControls(camera, renderer.domElement);
-            controls.enableDamping = true;
-
-            // Create a render target with depth texture
-            setupRenderTarget();
-
-            // Our scene
-            setupScene();
-
-            // Setup post-processing step
-            setupPost();
-
-            onWindowResize();
-            window.addEventListener('resize', onWindowResize);
-
-            //
-            const gui = new GUI({ width: 300 });
-
-            gui.add(params, 'format', formats).onChange(setupRenderTarget);
-            gui.add(params, 'type', types).onChange(setupRenderTarget);
-            gui.add(params, 'samples', 0, 16, 1).onChange(setupRenderTarget);
-            gui.add({ saveDepth: saveDepthMap }, 'saveDepth').name('Export Depth Map');
-            gui.add({ savePCD: savePCD }, 'savePCD').name('Export PCD');
-            gui.open();
-
-        }
-
-        function setupRenderTarget() {
-
-            if (target) target.dispose();
-
-            const format = parseInt(params.format);
-            const type = parseInt(params.type);
-            const samples = parseInt(params.samples);
-
-            const dpr = renderer.getPixelRatio();
-            target = new THREE.WebGLRenderTarget(window.innerWidth * dpr, window.innerHeight * dpr);
-            target.texture.minFilter = THREE.NearestFilter;
-            target.texture.magFilter = THREE.NearestFilter;
-            target.texture.generateMipmaps = false;
-            target.stencilBuffer = (format === THREE.DepthStencilFormat) ? true : false;
-            target.samples = samples;
-
-            target.depthTexture = new THREE.DepthTexture();
-            target.depthTexture.format = format;
-            target.depthTexture.type = type;
-
-        }
-
-        function setupPost() {
-
-            // Setup post processing stage
-            postCamera = new THREE.OrthographicCamera(- 1, 1, 1, - 1, 0, 1);
-
-            depthVisMaterial = new THREE.ShaderMaterial({
-                vertexShader: document.querySelector('#post-vert').textContent.trim(),
-                fragmentShader: document.querySelector('#depth-vis-frag').textContent.trim(),
-                uniforms: {
-                    cameraNear: { value: camera.near },
-                    cameraFar: { value: camera.far },
-                    tDepth: { value: null },
-                    tDiffuse: { value: null },
+             _addTorusKnotGeometry() {
+                const geometry = new THREE.TorusKnotGeometry(1, 0.3, 128, 64);
+                const material = new THREE.MeshBasicMaterial({ color: 'blue' });
+                const count = 50;
+                const scale = 5;
+                for (let i = 0; i < count; i++) {
+                    const r = Math.random() * 2.0 * Math.PI;
+                    const z = (Math.random() * 2.0) - 1.0;
+                    const zScale = Math.sqrt(1.0 - z * z) * scale;
+                    const mesh = new THREE.Mesh(geometry, material);
+                    mesh.position.set(Math.cos(r) * zScale, Math.sin(r) * zScale, z * scale);
+                    mesh.rotation.set(Math.random(), Math.random(), Math.random());
+                    this.scene.add(mesh);
                 }
-            });
+            }
 
-            pcdMaterial = new THREE.ShaderMaterial({
-                vertexShader: document.querySelector('#post-vert').textContent.trim(),
-                fragmentShader: document.querySelector('#export-pos-frag').textContent.trim(),
-                uniforms: {
-                    tDiffuse: { value: null },
-                    tDepth: { value: null },
-                    cameraNear: { value: camera.near },
-                    cameraFar: { value: camera.far },
-                    projectionMatrixInverse: { value: new THREE.Matrix4() },
-                    viewMatrixInverse: { value: new THREE.Matrix4() }
+
+            setupControls(rendererDomElement) {
+                 if (!this.camera) return;
+                 this.controls = new OrbitControls(this.camera, rendererDomElement);
+                 this.controls.enableDamping = true;
+            }
+
+            resize() {
+                if (!this.camera) return;
+                this.camera.aspect = window.innerWidth / window.innerHeight;
+                this.camera.updateProjectionMatrix();
+            }
+
+            updateControls() {
+                if (this.controls) {
+                    this.controls.update();
                 }
-            });
-            // Setup post FX (for display only)
-            postCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
-            const postPlane = new THREE.PlaneGeometry(2, 2);
-            const postQuad = new THREE.Mesh(postPlane, depthVisMaterial);// <- for display only
-            postScene = new THREE.Scene();
-            postScene.add(postQuad);
-
-        }
-
-        function setupScene() {
-            scene = new THREE.Scene();
-            // addPlane(scene);
-            addDonut(scene);
-            // addBunny(scene);
-            // addTorusKnotGeometry(scene);
-        }
-
-        function addPlane(scene) {
-            const geometry = new THREE.PlaneGeometry(1, 1); // width, height
-            const material = new THREE.MeshBasicMaterial({ color: 'blue' });
-            const plane = new THREE.Mesh(geometry, material);
-            plane.rotation.x = -Math.PI / 2; // Rotate to lay flat (horizontal)
-            scene.add(plane);
-        }
-
-        function addDonut(scene) {
-            const geometry = new THREE.TorusGeometry(1, 0.2, 16, 100); // (radius, tube, radialSegments, tubularSegments)
-            const material = new THREE.MeshBasicMaterial({ color: 'blue' });
-            const torus = new THREE.Mesh(geometry, material);
-            scene.add(torus);
-        }
-
-        function addBunny(scene) {
-            const loader = new PLYLoader();
-            loader.load('./bunny.ply', function (geometry) {
-                geometry.computeVertexNormals();
-
-                const material = new THREE.MeshBasicMaterial({ color: 0x6699ff, wireframe: false });
-                const mesh = new THREE.Mesh(geometry, material);
-
-                mesh.scale.set(10, 10, 10); // Scale up the bunny
-                mesh.rotation.y = Math.PI; // Optional: flip direction
-                scene.add(mesh);
-            });
-        }
-
-        function addTorusKnotGeometry(scene) {
-            const geometry = new THREE.TorusKnotGeometry(1, 0.3, 128, 64);
-            const material = new THREE.MeshBasicMaterial({ color: 'blue' });
-
-            const count = 50;
-            const scale = 5;
-
-            for (let i = 0; i < count; i++) {
-
-                const r = Math.random() * 2.0 * Math.PI;
-                const z = (Math.random() * 2.0) - 1.0;
-                const zScale = Math.sqrt(1.0 - z * z) * scale;
-
-                const mesh = new THREE.Mesh(geometry, material);
-                mesh.position.set(
-                    Math.cos(r) * zScale,
-                    Math.sin(r) * zScale,
-                    z * scale
-                );
-                mesh.rotation.set(Math.random(), Math.random(), Math.random());
-                scene.add(mesh);
-
             }
         }
 
-        function onWindowResize() {
+        class RenderTargetSetup {
+            constructor(renderer) {
+                 this.renderer = renderer;
+                 this.target = null;
+                 this.params = {
+                     format: THREE.DepthFormat,
+                     type: THREE.FloatType, // Default to FloatType for better precision if supported
+                     samples: 0,
+                 };
+                 this.formats = { DepthFormat: THREE.DepthFormat, DepthStencilFormat: THREE.DepthStencilFormat };
+                 // Ensure FloatType is available, otherwise fallback might be needed
+                 this.types = { UnsignedShortType: THREE.UnsignedShortType, UnsignedIntType: THREE.UnsignedIntType, FloatType: THREE.FloatType };
 
-            const aspect = window.innerWidth / window.innerHeight;
-            camera.aspect = aspect;
-            camera.updateProjectionMatrix();
+                 this.createOrUpdateTarget(); // Initial creation
+            }
 
-            const dpr = renderer.getPixelRatio();
-            target.setSize(window.innerWidth * dpr, window.innerHeight * dpr);
-            renderer.setSize(window.innerWidth, window.innerHeight);
+            createOrUpdateTarget() {
+                if (this.target) this.target.dispose();
 
+                const format = parseInt(this.params.format);
+                const type = parseInt(this.params.type);
+                const samples = parseInt(this.params.samples);
+                const dpr = this.renderer.getPixelRatio();
+                const width = window.innerWidth * dpr;
+                const height = window.innerHeight * dpr;
+
+                this.target = new THREE.WebGLRenderTarget(width, height);
+                this.target.texture.minFilter = THREE.NearestFilter;
+                this.target.texture.magFilter = THREE.NearestFilter;
+                this.target.texture.generateMipmaps = false;
+                this.target.stencilBuffer = (format === THREE.DepthStencilFormat);
+                this.target.samples = samples;
+
+                this.target.depthTexture = new THREE.DepthTexture(width, height); // Pass dimensions
+                this.target.depthTexture.format = format;
+                this.target.depthTexture.type = type;
+
+                console.log(`Render Target created/updated: ${width}x${height}, Format: ${format}, Type: ${type}, Samples: ${samples}`);
+            }
+
+             resize() {
+                 // Recreate target on resize to handle potential DPR changes or size updates
+                 this.createOrUpdateTarget();
+             }
+
+             getDepthTexture() {
+                 return this.target ? this.target.depthTexture : null;
+             }
+
+             getColorTexture() {
+                 return this.target ? this.target.texture : null;
+             }
         }
 
-        function animate() {
 
-            // render scene into target
-            renderer.setRenderTarget(target);
-            renderer.render(scene, camera);
+        class PostProcessingSetup {
+            constructor(camera) { // Needs main camera for near/far
+                this.postCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+                this.postScene = new THREE.Scene();
+                this.depthVisMaterial = null;
+                this.pcdMaterial = null;
+                this.mainCamera = camera; // Store reference to main camera
 
-            // render post FX
-            // postMaterial.uniforms.tDiffuse.value = target.texture;
-            pcdMaterial.uniforms.tDepth.value = target.depthTexture;
-            pcdMaterial.uniforms.projectionMatrixInverse.value.copy(camera.projectionMatrix).invert();
-            pcdMaterial.uniforms.viewMatrixInverse.value.copy(camera.matrixWorld);
+                this._setupMaterials();
+                this._setupPostScene();
+            }
 
-            depthVisMaterial.uniforms.tDepth.value = target.depthTexture;
+            _setupMaterials() {
+                const vertexShader = document.querySelector('#post-vert').textContent.trim();
+                const depthVisFragShader = document.querySelector('#depth-vis-frag').textContent.trim();
+                const exportPosFragShader = document.querySelector('#export-pos-frag').textContent.trim();
 
-            renderer.setRenderTarget(null);
-            renderer.render(postScene, postCamera);
-
-            controls.update(); // required because damping is enabled
-
-            stats.update();
-
-        }
-
-        function saveDepthMap() {
-            const width = target.width;
-            const height = target.height;
-
-            document.getElementById('progress').style.display = 'block';
-            document.getElementById('downloadLink').innerHTML = '';
-
-            // Delay to let UI update before blocking render/read
-            setTimeout(() => {
-
-                const readTarget = new THREE.WebGLRenderTarget(width, height);
-                readTarget.texture.minFilter = THREE.NearestFilter;
-                readTarget.texture.magFilter = THREE.NearestFilter;
-                readTarget.texture.generateMipmaps = false;
-
-                // Re-render the post scene into the new target
-                pcdMaterial.uniforms.tDiffuse.value = target.texture;
-                pcdMaterial.uniforms.tDepth.value = target.depthTexture;
-
-                renderer.setRenderTarget(readTarget);
-                renderer.render(postScene, postCamera);
-                renderer.setRenderTarget(null);
-
-                // Read pixels from GPU
-                const pixels = new Uint8Array(width * height * 4);
-                renderer.readRenderTargetPixels(readTarget, 0, 0, width, height, pixels);
-
-                // Create canvas and flip Y
-                const canvas = document.createElement('canvas');
-                canvas.width = width;
-                canvas.height = height;
-                const ctx = canvas.getContext('2d');
-                const imageData = ctx.createImageData(width, height);
-
-                for (let y = 0; y < height; y++) {
-                    for (let x = 0; x < width; x++) {
-                        const srcIdx = (x + (height - y - 1) * width) * 4;
-                        const dstIdx = (x + y * width) * 4;
-                        imageData.data[dstIdx] = pixels[srcIdx];
-                        imageData.data[dstIdx + 1] = pixels[srcIdx + 1];
-                        imageData.data[dstIdx + 2] = pixels[srcIdx + 2];
-                        imageData.data[dstIdx + 3] = 255;
-                    }
-                }
-
-                ctx.putImageData(imageData, 0, 0);
-
-                // Create downloadable image link
-                canvas.toBlob((blob) => {
-                    const url = URL.createObjectURL(blob);
-                    const link = document.createElement('a');
-                    link.href = url;
-                    link.download = 'depth-map.png';
-                    link.textContent = 'Click here to download depth map';
-                    link.style.display = 'inline-block';
-                    link.style.marginTop = '10px';
-                    link.style.fontFamily = 'sans-serif';
-
-                    document.getElementById('downloadLink').appendChild(link);
-                    document.getElementById('progress').style.display = 'none';
-
-                }, 'image/png');
-
-            }, 100); // small delay lets the DOM update "Exporting..." before blocking
-
-        }
-
-        function savePCD(step = 4) { // Try 2, 4, 8, etc. Higher = fewer points
-            const width = target.width;
-            const height = target.height;
-
-            document.getElementById('progress').style.display = 'block';
-            document.getElementById('downloadLink').innerHTML = '';
-
-            setTimeout(() => {
-                const exportMaterial = new THREE.ShaderMaterial({
-                    vertexShader: document.querySelector('#post-vert').textContent.trim(),
-                    fragmentShader: document.querySelector('#export-pos-frag').textContent.trim(),
+                this.depthVisMaterial = new THREE.ShaderMaterial({
+                    vertexShader: vertexShader,
+                    fragmentShader: depthVisFragShader,
                     uniforms: {
-                        tDepth: { value: target.depthTexture },
-                        cameraNear: { value: camera.near },
-                        cameraFar: { value: camera.far },
-                        projectionMatrixInverse: { value: new THREE.Matrix4().copy(camera.projectionMatrix).invert() },
-                        viewMatrixInverse: { value: new THREE.Matrix4().copy(camera.matrixWorld) }
+                        cameraNear: { value: this.mainCamera.near },
+                        cameraFar: { value: this.mainCamera.far },
+                        tDepth: { value: null }, // Will be updated in render loop
                     }
                 });
 
-                const readTarget = new THREE.WebGLRenderTarget(width, height, {
-                    type: THREE.FloatType,
-                    format: THREE.RGBAFormat,
-                    depthBuffer: false,
-                    stencilBuffer: false
-                });
-
-                const exportScene = new THREE.Scene();
-                const quad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), exportMaterial);
-                exportScene.add(quad);
-
-                renderer.setRenderTarget(readTarget);
-                renderer.render(exportScene, postCamera);
-                renderer.setRenderTarget(null);
-
-                const pixels = new Float32Array(width * height * 4);
-                renderer.readRenderTargetPixels(readTarget, 0, 0, width, height, pixels);
-
-                const points = [];
-
-                for (let y = 0; y < height; y += step) {
-                    for (let x = 0; x < width; x += step) {
-                        const i = (x + (height - y - 1) * width) * 4;
-
-                        const px = pixels[i];
-                        const py = pixels[i + 1];
-                        const pz = pixels[i + 2];
-
-                        if (Number.isFinite(px) && Number.isFinite(py) && Number.isFinite(pz)) {
-                            points.push(`${px} ${py} ${pz}`);
-                        }
+                this.pcdMaterial = new THREE.ShaderMaterial({
+                    vertexShader: vertexShader,
+                    fragmentShader: exportPosFragShader,
+                    uniforms: {
+                        tDepth: { value: null }, // Will be updated
+                        cameraNear: { value: this.mainCamera.near },
+                        cameraFar: { value: this.mainCamera.far },
+                        projectionMatrixInverse: { value: new THREE.Matrix4() }, // Will be updated
+                        viewMatrixInverse: { value: new THREE.Matrix4() } // Will be updated
                     }
-                }
+                });
+            }
 
-                const header = [
-                    'VERSION .7',
-                    'FIELDS x y z',
-                    'SIZE 4 4 4',
-                    'TYPE F F F',
-                    'COUNT 1 1 1',
-                    `WIDTH ${points.length}`,
-                    'HEIGHT 1',
-                    'VIEWPOINT 0 0 0 1 0 0 0',
-                    `POINTS ${points.length}`,
-                    'DATA ascii'
-                ];
+            _setupPostScene() {
+                const postPlane = new THREE.PlaneGeometry(2, 2);
+                // The quad uses the depth visualization material for display
+                const postQuad = new THREE.Mesh(postPlane, this.depthVisMaterial);
+                this.postScene.add(postQuad);
+            }
 
-                const pcdContent = header.concat(points).join('\n');
-                const blob = new Blob([pcdContent], { type: 'text/plain' });
-                const url = URL.createObjectURL(blob);
-
-                const link = document.createElement('a');
-                link.href = url;
-                link.download = 'pointcloud.pcd';
-                link.textContent = 'Click here to download PCD';
-                link.style.display = 'inline-block';
-                link.style.marginTop = '10px';
-                link.style.fontFamily = 'sans-serif';
-
-                document.getElementById('downloadLink').appendChild(link);
-                document.getElementById('progress').style.display = 'none';
-
-            }, 100);
+            updateUniforms(depthTexture, camera) {
+                 if (this.depthVisMaterial) {
+                     this.depthVisMaterial.uniforms.tDepth.value = depthTexture;
+                     // Update near/far if they change dynamically (unlikely here)
+                     // this.depthVisMaterial.uniforms.cameraNear.value = camera.near;
+                     // this.depthVisMaterial.uniforms.cameraFar.value = camera.far;
+                 }
+                 if (this.pcdMaterial) {
+                     this.pcdMaterial.uniforms.tDepth.value = depthTexture;
+                     this.pcdMaterial.uniforms.projectionMatrixInverse.value.copy(camera.projectionMatrix).invert();
+                     this.pcdMaterial.uniforms.viewMatrixInverse.value.copy(camera.matrixWorld);
+                     // Update near/far if they change dynamically
+                     // this.pcdMaterial.uniforms.cameraNear.value = camera.near;
+                     // this.pcdMaterial.uniforms.cameraFar.value = camera.far;
+                 }
+            }
         }
+
+        class ExportHelper {
+             constructor(renderer, target, camera, pcdMaterial, depthVisMaterial, postScene, postCamera) {
+                 this.renderer = renderer;
+                 this.target = target; // The main render target instance
+                 this.camera = camera;
+                 this.pcdMaterial = pcdMaterial;
+                 this.depthVisMaterial = depthVisMaterial;
+                 this.postScene = postScene; // Scene with the quad for visualization/export rendering
+                 this.postCamera = postCamera; // Ortho camera for post/export rendering
+
+                 this.saveDepthMap = this.saveDepthMap.bind(this); // Bind methods
+                 this.savePCD = this.savePCD.bind(this);
+             }
+
+             _showProgress() {
+                 document.getElementById('progress').style.display = 'block';
+                 document.getElementById('downloadLink').innerHTML = '';
+             }
+
+             _hideProgress() {
+                 document.getElementById('progress').style.display = 'none';
+             }
+
+             _createDownloadLink(blob, filename, linkText) {
+                 const url = URL.createObjectURL(blob);
+                 const link = document.createElement('a');
+                 link.href = url;
+                 link.download = filename;
+                 link.textContent = linkText;
+                 link.style.display = 'inline-block';
+                 link.style.marginTop = '10px';
+                 link.style.fontFamily = 'sans-serif';
+                 document.getElementById('downloadLink').appendChild(link);
+                 // Consider revoking URL later: setTimeout(() => URL.revokeObjectURL(url), 60000);
+             }
+
+             saveDepthMap() {
+                 this._showProgress();
+                 const width = this.target.width;
+                 const height = this.target.height;
+
+                 setTimeout(() => {
+                     const readTarget = new THREE.WebGLRenderTarget(width, height, {
+                         minFilter: THREE.NearestFilter,
+                         magFilter: THREE.NearestFilter,
+                         format: THREE.RGBAFormat // Read RGBA from the visualization shader
+                     });
+
+                     // Ensure the depthVisMaterial has the latest depth texture
+                     this.depthVisMaterial.uniforms.tDepth.value = this.target.depthTexture;
+
+                     // Render the post scene (quad with depthVisMaterial) into readTarget
+                     this.renderer.setRenderTarget(readTarget);
+                     this.renderer.render(this.postScene, this.postCamera);
+                     this.renderer.setRenderTarget(null);
+
+                     const pixels = new Uint8Array(width * height * 4);
+                     this.renderer.readRenderTargetPixels(readTarget, 0, 0, width, height, pixels);
+                     readTarget.dispose();
+
+                     const canvas = document.createElement('canvas');
+                     canvas.width = width;
+                     canvas.height = height;
+                     const ctx = canvas.getContext('2d');
+                     const imageData = ctx.createImageData(width, height);
+
+                     // Flip Y
+                     for (let y = 0; y < height; y++) {
+                         for (let x = 0; x < width; x++) {
+                             const srcIdx = (x + (height - 1 - y) * width) * 4;
+                             const dstIdx = (x + y * width) * 4;
+                             imageData.data[dstIdx] = pixels[srcIdx];
+                             imageData.data[dstIdx + 1] = pixels[srcIdx + 1];
+                             imageData.data[dstIdx + 2] = pixels[srcIdx + 2];
+                             imageData.data[dstIdx + 3] = 255;
+                         }
+                     }
+                     ctx.putImageData(imageData, 0, 0);
+
+                     canvas.toBlob((blob) => {
+                         this._createDownloadLink(blob, 'depth-map.png', 'Click here to download depth map');
+                         this._hideProgress();
+                     }, 'image/png');
+
+                 }, 100);
+             }
+
+             savePCD(step = 4) {
+                 this._showProgress();
+                 const width = this.target.width;
+                 const height = this.target.height;
+
+                 setTimeout(() => {
+                     // Use the pcdMaterial which calculates world positions
+                     const exportMaterial = this.pcdMaterial;
+
+                     // Ensure pcdMaterial uniforms are up-to-date
+                     exportMaterial.uniforms.tDepth.value = this.target.depthTexture;
+                     exportMaterial.uniforms.projectionMatrixInverse.value.copy(this.camera.projectionMatrix).invert();
+                     exportMaterial.uniforms.viewMatrixInverse.value.copy(this.camera.matrixWorld);
+
+
+                     const readTarget = new THREE.WebGLRenderTarget(width, height, {
+                         type: THREE.FloatType, // Read float data
+                         format: THREE.RGBAFormat,
+                         depthBuffer: false,
+                         stencilBuffer: false
+                     });
+
+                     // Need a temporary scene with a quad using the pcdMaterial
+                     const exportScene = new THREE.Scene();
+                     const quad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), exportMaterial);
+                     exportScene.add(quad);
+
+                     // Render world positions into readTarget
+                     this.renderer.setRenderTarget(readTarget);
+                     this.renderer.render(exportScene, this.postCamera); // Use ortho camera
+                     this.renderer.setRenderTarget(null);
+
+                     const pixels = new Float32Array(width * height * 4);
+                     this.renderer.readRenderTargetPixels(readTarget, 0, 0, width, height, pixels);
+                     readTarget.dispose();
+
+                     const points = [];
+                     // Flip Y while iterating
+                     for (let y = 0; y < height; y += step) {
+                         for (let x = 0; x < width; x += step) {
+                             const i = (x + (height - 1 - y) * width) * 4; // Flipped Y index
+                             const px = pixels[i];
+                             const py = pixels[i + 1];
+                             const pz = pixels[i + 2];
+                             const w = pixels[i + 3];
+
+                             // Filter out points that are:
+                             // 1. Not finite numbers
+                             // 2. Have zero coordinates (likely background/invalid points)
+                             // 3. Have zero alpha (explicitly marked as invalid by shader)
+                             if (!Number.isFinite(px) || !Number.isFinite(py) || !Number.isFinite(pz)) {
+                                 continue;
+                             }
+
+                             if (px === 0 && py === 0 && pz === 0) {
+                                // console.log(`${px} ${py} ${pz}`);
+                                 continue;
+                             }
+
+                             if (w <= 0) {
+                                 continue;
+                             }
+
+                             points.push(`${-px} ${py} ${-pz}`);
+                         }
+                     }
+
+                     const header = [
+                         'VERSION .7', 'FIELDS x y z', 'SIZE 4 4 4', 'TYPE F F F', 'COUNT 1 1 1',
+                         `WIDTH ${points.length}`, 'HEIGHT 1', 'VIEWPOINT 0 0 0 1 0 0 0',
+                         `POINTS ${points.length}`, 'DATA ascii'
+                     ];
+                     const pcdContent = header.concat(points).join('\n');
+                     const blob = new Blob([pcdContent], { type: 'text/plain' });
+
+                     this._createDownloadLink(blob, 'pointcloud.pcd', 'Click here to download PCD');
+                     this._hideProgress();
+
+                 }, 100);
+             }
+        }
+
+        class UIHelper {
+            constructor(renderTargetSetup, exportHelper) { // Needs access to setup/helpers for callbacks
+                this.gui = new GUI({ width: 300 });
+                this.renderTargetSetup = renderTargetSetup;
+                this.exportHelper = exportHelper;
+                this.stats = new Stats();
+                document.body.appendChild(this.stats.dom);
+
+                this._setupGUI();
+            }
+
+            _setupGUI() {
+                // Bind the method to ensure 'this' refers to renderTargetSetup instance
+                const updateTargetCallback = this.renderTargetSetup.createOrUpdateTarget.bind(this.renderTargetSetup);
+
+                this.gui.add(this.renderTargetSetup.params, 'format', this.renderTargetSetup.formats)
+                    .name('Depth Format')
+                    .onChange(updateTargetCallback);
+                this.gui.add(this.renderTargetSetup.params, 'type', this.renderTargetSetup.types)
+                     .name('Depth Type')
+                     .onChange(updateTargetCallback);
+                this.gui.add(this.renderTargetSetup.params, 'samples', 0, 16, 1)
+                     .name('MSAA Samples')
+                     .onChange(updateTargetCallback);
+
+                // Add export buttons
+                this.gui.add(this.exportHelper, 'saveDepthMap').name('Export Depth Map');
+                this.gui.add(this.exportHelper, 'savePCD').name('Export PCD');
+
+                this.gui.open();
+            }
+
+            updateStats() {
+                this.stats.update();
+            }
+        }
+
+
+        // --- Main Application Class ---
+
+        class App {
+            constructor() {
+                this.renderer = null;
+                this.sceneSetup = null;
+                this.renderTargetSetup = null;
+                this.postProcessingSetup = null;
+                this.exportHelper = null;
+                this.uiHelper = null;
+
+                this.animate = this.animate.bind(this); // Bind animate loop
+                this.onWindowResize = this.onWindowResize.bind(this); // Bind resize handler
+            }
+
+            init() {
+                this._setupRenderer();
+                this.sceneSetup = new SceneSetup(document.body); // Pass container
+                this.sceneSetup.setupControls(this.renderer.domElement); // Setup controls after renderer exists
+
+                this.renderTargetSetup = new RenderTargetSetup(this.renderer);
+                this.postProcessingSetup = new PostProcessingSetup(this.sceneSetup.camera); // Pass main camera
+
+                this.exportHelper = new ExportHelper(
+                    this.renderer,
+                    this.renderTargetSetup.target, // Pass the target object itself
+                    this.sceneSetup.camera,
+                    this.postProcessingSetup.pcdMaterial,
+                    this.postProcessingSetup.depthVisMaterial,
+                    this.postProcessingSetup.postScene,
+                    this.postProcessingSetup.postCamera
+                );
+
+                this.uiHelper = new UIHelper(this.renderTargetSetup, this.exportHelper);
+
+                window.addEventListener('resize', this.onWindowResize);
+                this.onWindowResize(); // Initial size setup
+
+                this.renderer.setAnimationLoop(this.animate); // Start loop
+            }
+
+            _setupRenderer() {
+                this.renderer = new THREE.WebGLRenderer();
+                this.renderer.setPixelRatio(window.devicePixelRatio);
+                this.renderer.setSize(window.innerWidth, window.innerHeight);
+                document.body.appendChild(this.renderer.domElement);
+            }
+
+            onWindowResize() {
+                const width = window.innerWidth;
+                const height = window.innerHeight;
+
+                this.renderer.setSize(width, height);
+                this.sceneSetup.resize();
+                this.renderTargetSetup.resize(); // This will recreate the target with new size/dpr
+                // Update export helper's reference to the target if it was recreated
+                this.exportHelper.target = this.renderTargetSetup.target;
+                // Post-processing camera doesn't usually need resize unless aspect changes matter
+            }
+
+            animate() {
+                this.sceneSetup.updateControls(); // Update orbit controls
+
+                // 1. Render main scene to target
+                this.renderer.setRenderTarget(this.renderTargetSetup.target);
+                this.renderer.render(this.sceneSetup.scene, this.sceneSetup.camera);
+
+                // 2. Update post-processing uniforms
+                this.postProcessingSetup.updateUniforms(
+                    this.renderTargetSetup.getDepthTexture(),
+                    this.sceneSetup.camera
+                );
+
+                // 3. Render post-processing scene (depth visualization) to screen
+                this.renderer.setRenderTarget(null);
+                this.renderer.render(this.postProcessingSetup.postScene, this.postProcessingSetup.postCamera);
+
+                this.uiHelper.updateStats(); // Update FPS counter
+            }
+        }
+
+        // --- Start the application ---
+        const app = new App();
+        app.init();
+
 
     </script>
 
