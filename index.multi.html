@@ -1,11 +1,42 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
   <title>three.js webgl - multiple views with OrbitControls</title>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0">
   <link type="text/css" rel="stylesheet" href="main.css">
+  <script id="depth-vert" type="x-shader/x-vertex">
+    varying vec2 vUv;
+    void main() {
+        vUv = uv;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    }
+    </script>
+
+  <script id="depth-vis-frag" type="x-shader/x-fragment">
+    varying vec2 vUv;
+    
+    uniform sampler2D tDepth;
+    uniform float cameraNear;
+    uniform float cameraFar;
+    
+    #include <packing>
+    
+    // unpack depth then normalize by far plane
+    float readRealDepth() {
+        float fragCoordZ = texture2D(tDepth, vUv).x;
+        return -perspectiveDepthToViewZ(fragCoordZ, cameraNear, cameraFar) / cameraFar;
+    }
+    
+    void main() {
+        float d = readRealDepth();
+        gl_FragColor = vec4(vec3(1.0 - d), 1.0);
+    }
+    </script>
+
 </head>
+
 <body>
 
   <div id="container"></div>
@@ -23,190 +54,297 @@
   </script>
 
   <script type="module">
-
     import * as THREE from 'three';
     import Stats from 'three/addons/libs/stats.module.js';
     import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+    // grab shader sources
+    const depthVertSrc = document.getElementById('depth-vert').textContent.trim();
+    const depthFragSrc = document.getElementById('depth-vis-frag').textContent.trim();
 
-    let stats;
-    let scene, renderer;
-    let windowWidth = window.innerWidth, windowHeight = window.innerHeight;
-
-    const views = [
-      {
-        left: 0,
-        bottom: 0,
-        width: 1.0,
-        height: 1.0,
-        background: new THREE.Color(0.5,0.5,0.5),//new THREE.Color(0.5, 0.5, 0.7),
-        eye: [0, 300, 1800],
-        up: [0, 1, 0],
-        fov: 30
-      },
-      {
-        left: 0.75,
-        bottom: 0.75,
-        width: 0.25,
-        height: 0.25,
-        background: new THREE.Color(0,0,0),//new THREE.Color(0.7, 0.5, 0.5),
-        eye: [0, 1800, 0],
-        up: [0, 0, 1],
-        fov: 45
-      },
-      {
-        left: 0.5,
-        bottom: 0.75,
-        width: 0.25,
-        height: 0.25,
-        background: new THREE.Color(0,0,0),//new THREE.Color(0.5, 0.7, 0.7),
-        eye: [1400, 800, 1400],
-        up: [0, 1, 0],
-        fov: 60
+    // create the depth‑vis material once
+    const depthVisMaterial = new THREE.ShaderMaterial({
+      vertexShader: depthVertSrc,
+      fragmentShader: depthFragSrc,
+      uniforms: {
+        tDepth: { value: null },
+        cameraNear: { value: 1 },
+        cameraFar: { value: 10000 }
       }
+    });
+
+    // your enhanced Viewport class
+    class Viewport {
+      constructor(config, renderer, scene) {
+        this.config   = config;
+        this.renderer = renderer;
+        this.scene    = scene;
+
+        // --- camera & controls ---
+        this.camera = new THREE.PerspectiveCamera(
+          config.fov,
+          window.innerWidth / window.innerHeight,
+          config.near || 1,
+          config.far  || 10000
+        );
+        this.camera.position.fromArray(config.eye);
+        this.camera.up.fromArray(config.up);
+
+        this.controls = new OrbitControls(this.camera, renderer.domElement);
+        this.controls.enableDamping = true;
+        this.controls.enabled = false;        // start disabled
+        this.controls.target.set(0, 0, 0);
+        this.controls.update();
+        
+        // const helper = new THREE.CameraHelper( this.camera );
+        // this.scene.add( helper );
+
+        this.controls = new OrbitControls(this.camera, renderer.domElement);
+        this.controls.target.set(0, 0, 0);
+        this.controls.update();
+
+        // whether to show color or depth
+        this.viewMode = config.viewMode || 'color';
+
+        // off‑screen target for depth
+        this.target = new THREE.WebGLRenderTarget(1, 1, {
+          minFilter: THREE.NearestFilter,
+          magFilter: THREE.NearestFilter,
+          stencilBuffer: false
+        });
+        this.target.depthTexture = new THREE.DepthTexture();
+        this.target.depthTexture.format = THREE.DepthFormat;
+        this.target.depthTexture.type = THREE.UnsignedShortType;
+
+        // post‑scene for depth quad
+        this.postCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+        this.postScene = new THREE.Scene();
+        this.quad = new THREE.Mesh(
+          new THREE.PlaneGeometry(2, 2),
+          depthVisMaterial
+        );
+        this.postScene.add(this.quad);
+      }
+
+      render(windowWidth, windowHeight) {
+        const { left, bottom, width, height, background } = this.config;
+
+        this.controls.update();
+
+        const x = Math.floor(windowWidth * left);
+        const y = Math.floor(windowHeight * bottom);
+        const w = Math.floor(windowWidth * width);
+        const h = Math.floor(windowHeight * height);
+
+        this.camera.aspect = w / h;
+        this.camera.updateProjectionMatrix();
+        this.target.setSize(w, h);
+
+        // 1) draw scene → render target (populates depthTexture)
+        this.renderer.setRenderTarget(this.target);
+        this.renderer.render(this.scene, this.camera);
+
+        // 2) back to canvas, scissor to sub‑window
+        this.renderer.setRenderTarget(null);
+        this.renderer.setViewport(x, y, w, h);
+        this.renderer.setScissor(x, y, w, h);
+        this.renderer.setScissorTest(true);
+        this.renderer.setClearColor(background);
+
+        if (this.viewMode === 'depth') {
+          // update uniforms each frame
+          const mat = this.quad.material;
+          mat.uniforms.cameraNear.value = this.camera.near;
+          mat.uniforms.cameraFar.value = this.camera.far;
+          mat.uniforms.tDepth.value = this.target.depthTexture;
+          // render quad
+          this.renderer.render(this.postScene, this.postCamera);
+        } else {
+          // normal color render
+          this.renderer.render(this.scene, this.camera);
+        }
+      }
+    }
+
+    // --- main application class ---
+    class ThreeJSApp {
+      constructor(containerId, viewConfigs) {
+        this.container = document.getElementById(containerId);
+        this.viewConfigs = viewConfigs;
+        this.windowWidth = window.innerWidth;
+        this.windowHeight = window.innerHeight;
+        this.views = [];
+      }
+
+      init() {
+        this._createScene();
+        this._addLight();
+        this._addShadows();
+        this._addMeshes();
+        this._initRenderer();
+        this._initStats();
+        this._initViewports();
+
+        // start render loop
+        this.renderer.setAnimationLoop(() => this._animate());
+        // handle resize
+        window.addEventListener('resize', () => this._onWindowResize());
+      }
+
+      _createScene() {
+        this.scene = new THREE.Scene();
+        // Add axis helper
+        const axesHelper = new THREE.AxesHelper(1000);
+        this.scene.add(axesHelper);
+      }
+
+      _addLight() {
+        // Add ambient light for overall scene illumination
+        const ambientLight = new THREE.AmbientLight(0xffffff, 6);
+        this.scene.add(ambientLight);
+
+        // Add directional light for shadows and highlights
+        // const directionalLight = new THREE.DirectionalLight(0xffffff, 3);
+        // directionalLight.position.set(0, 0, 10);
+        // this.scene.add(directionalLight);
+      }
+      _addShadows() {
+        // build a radial gradient texture
+        const size = 128;
+        const canvas = document.createElement('canvas');
+        canvas.width = canvas.height = size;
+        const ctx = canvas.getContext('2d');
+        const grad = ctx.createRadialGradient(
+          size / 2, size / 2, 0,
+          size / 2, size / 2, size / 2
+        );
+        grad.addColorStop(0.1, 'rgba(0,0,0,0.15)');
+        grad.addColorStop(1, 'rgba(0,0,0,0)');
+        ctx.fillStyle = grad;
+        ctx.fillRect(0, 0, size, size);
+
+        const tex = new THREE.CanvasTexture(canvas);
+        const mat = new THREE.MeshBasicMaterial({ map: tex, transparent: true });
+        // const geo = new THREE.PlaneGeometry(300, 300);
+
+        // for (let x of [-400, 0, 400]) {
+        //   const m = new THREE.Mesh(geo, mat);
+        //   m.position.set(x, -250, 0);
+        //   m.rotation.x = -Math.PI / 2;
+        //   this.scene.add(m);
+        // }
+      }
+
+      _addMeshes() {
+        const radius = 200;
+        const geo1 = new THREE.IcosahedronGeometry(radius, 1);
+        const count = geo1.attributes.position.count;
+        geo1.setAttribute('color', new THREE.BufferAttribute(new Float32Array(count * 3), 3));
+        const geo2 = geo1.clone();
+        const geo3 = geo1.clone();
+
+        const color = new THREE.Color();
+        const [pos1, col1] = [geo1.attributes.position, geo1.attributes.color];
+        const [pos2, col2] = [geo2.attributes.position, geo2.attributes.color];
+        const [pos3, col3] = [geo3.attributes.position, geo3.attributes.color];
+
+        for (let i = 0; i < count; i++) {
+          color.setHSL((pos1.getY(i) / radius + 1) / 2, 1, 0.5);
+          col1.setXYZ(i, color.r, color.g, color.b);
+          color.setHSL(0, (pos2.getY(i) / radius + 1) / 2, 0.5);
+          col2.setXYZ(i, color.r, color.g, color.b);
+          color.setRGB(1, 0.8 - (pos3.getY(i) / radius + 1) / 2, 0);
+          col3.setXYZ(i, color.r, color.g, color.b);
+        }
+
+        const phongMat = new THREE.MeshPhongMaterial({
+          color: 0xffffff,
+          flatShading: true,
+          vertexColors: true,
+          shininess: 0
+        });
+        const wireMat = new THREE.MeshBasicMaterial({
+          color: 0x000,
+          wireframe: true,
+          transparent: true
+        });
+
+        // helper to build one colored‑wireframe combo
+        const buildMesh = (geo, x, rotX = 0) => {
+          const mesh = new THREE.Mesh(geo, phongMat);
+          mesh.add(new THREE.Mesh(geo, wireMat));
+          mesh.position.x = x;
+          if (rotX) mesh.rotation.x = rotX;
+          this.scene.add(mesh);
+        };
+
+        buildMesh(geo1, -400, -1.87);
+        buildMesh(geo2, 400);
+        buildMesh(geo3, 0);
+      }
+
+      _initRenderer() {
+        this.renderer = new THREE.WebGLRenderer({ antialias: true });
+        this.renderer.setPixelRatio(window.devicePixelRatio);
+        this.renderer.setSize(this.windowWidth, this.windowHeight);
+        this.container.appendChild(this.renderer.domElement);
+      }
+
+      _initStats() {
+        this.stats = new Stats();
+        this.container.appendChild(this.stats.dom);
+      }
+
+      _initViewports() {
+        for (let cfg of this.viewConfigs) {
+          this.views.push(new Viewport(cfg, this.renderer, this.scene));
+        }
+      }
+
+      _onWindowResize() {
+        const w = window.innerWidth, h = window.innerHeight;
+        if (w === this.windowWidth && h === this.windowHeight) return;
+        this.windowWidth = w;
+        this.windowHeight = h;
+        this.renderer.setSize(w, h);
+      }
+
+      _animate() {
+        this._onWindowResize();
+        for (let v of this.views) {
+          v.render(this.windowWidth, this.windowHeight);
+        }
+        this.stats.update();
+      }
+    }
+
+    // --- your view setups ---
+    const viewConfigs = [
+      {
+        left: 0, bottom: 0, width: 1.0, height: 1.0,
+        background: new THREE.Color(0.5, 0.5, 0.5),
+        eye: [0, 300, 1800], up: [0, 1, 0], fov: 30
+      },
+      {
+        left: 0.5, bottom: 0.75, width: 0.25, height: 0.25,
+        background: new THREE.Color(0, 0, 0),
+        eye: [1400, 800, 1400], up: [0, 1, 0], fov: 60,        
+        viewMode: 'depth'
+      },
+      {
+        left: 0.75, bottom: 0.75, width: 0.25, height: 0.25,
+        background: new THREE.Color(0, 0, 0),
+        eye: [1400, 800, 1400], up: [0, 1, 0], fov: 60,
+      },
     ];
 
-    init();
-
-    function init() {
-      const container = document.getElementById('container');
-
-      scene = new THREE.Scene();
-
-      const light = new THREE.DirectionalLight(0xffffff, 3);
-      light.position.set(0, 0, 1);
-      scene.add(light);
-
-      // Shadow texture
-      const canvas = document.createElement('canvas');
-      canvas.width = 128;
-      canvas.height = 128;
-      const context = canvas.getContext('2d');
-      const gradient = context.createRadialGradient(64, 64, 0, 64, 64, 64);
-      gradient.addColorStop(0.1, 'rgba(0,0,0,0.15)');
-      gradient.addColorStop(1, 'rgba(0,0,0,0)');
-      context.fillStyle = gradient;
-      context.fillRect(0, 0, 128, 128);
-      const shadowTexture = new THREE.CanvasTexture(canvas);
-      const shadowMaterial = new THREE.MeshBasicMaterial({ map: shadowTexture, transparent: true });
-      const shadowGeo = new THREE.PlaneGeometry(300, 300);
-
-      for (let x of [-400, 0, 400]) {
-        const shadowMesh = new THREE.Mesh(shadowGeo, shadowMaterial);
-        shadowMesh.position.set(x, -250, 0);
-        shadowMesh.rotation.x = -Math.PI / 2;
-        scene.add(shadowMesh);
-      }
-
-      // Meshes
-      const radius = 200;
-      const geometry1 = new THREE.IcosahedronGeometry(radius, 1);
-      const count = geometry1.attributes.position.count;
-      geometry1.setAttribute('color', new THREE.BufferAttribute(new Float32Array(count * 3), 3));
-      const geometry2 = geometry1.clone();
-      const geometry3 = geometry1.clone();
-
-      const color = new THREE.Color();
-      const positions1 = geometry1.attributes.position;
-      const colors1 = geometry1.attributes.color;
-      const positions2 = geometry2.attributes.position;
-      const colors2 = geometry2.attributes.color;
-      const positions3 = geometry3.attributes.position;
-      const colors3 = geometry3.attributes.color;
-
-      for (let i = 0; i < count; i++) {
-        color.setHSL((positions1.getY(i) / radius + 1) / 2, 1.0, 0.5);
-        colors1.setXYZ(i, color.r, color.g, color.b);
-        color.setHSL(0, (positions2.getY(i) / radius + 1) / 2, 0.5);
-        colors2.setXYZ(i, color.r, color.g, color.b);
-        color.setRGB(1, 0.8 - (positions3.getY(i) / radius + 1) / 2, 0);
-        colors3.setXYZ(i, color.r, color.g, color.b);
-      }
-
-      const material = new THREE.MeshPhongMaterial({
-        color: 0xffffff,
-        flatShading: true,
-        vertexColors: true,
-        shininess: 0
-      });
-
-      const wireframeMaterial = new THREE.MeshBasicMaterial({ color: 0x000000, wireframe: true, transparent: true });
-
-      const mesh1 = new THREE.Mesh(geometry1, material);
-      mesh1.add(new THREE.Mesh(geometry1, wireframeMaterial));
-      mesh1.position.x = -400;
-      mesh1.rotation.x = -1.87;
-      scene.add(mesh1);
-
-      const mesh2 = new THREE.Mesh(geometry2, material);
-      mesh2.add(new THREE.Mesh(geometry2, wireframeMaterial));
-      mesh2.position.x = 400;
-      scene.add(mesh2);
-
-      const mesh3 = new THREE.Mesh(geometry3, material);
-      mesh3.add(new THREE.Mesh(geometry3, wireframeMaterial));
-      scene.add(mesh3);
-
-      renderer = new THREE.WebGLRenderer({ antialias: true });
-      renderer.setPixelRatio(window.devicePixelRatio);
-      renderer.setSize(window.innerWidth, window.innerHeight);
-      renderer.setAnimationLoop(animate);
-      container.appendChild(renderer.domElement);
-
-      stats = new Stats();
-      container.appendChild(stats.dom);
-
-      for (let view of views) {
-        const camera = new THREE.PerspectiveCamera(view.fov, window.innerWidth / window.innerHeight, 1, 10000);
-        camera.position.fromArray(view.eye);
-        camera.up.fromArray(view.up);
-        view.camera = camera;
-
-        const controls = new OrbitControls(camera, renderer.domElement);
-        controls.target.set(0, 0, 0);
-        controls.update();
-        view.controls = controls;
-      }
-    }
-
-    function updateSize() {
-      if (windowWidth !== window.innerWidth || windowHeight !== window.innerHeight) {
-        windowWidth = window.innerWidth;
-        windowHeight = window.innerHeight;
-        renderer.setSize(windowWidth, windowHeight);
-      }
-    }
-
-    function animate() {
-      render();
-      stats.update();
-    }
-
-    function render() {
-      updateSize();
-
-      for (let view of views) {
-        const { camera, controls, left, bottom, width, height, background } = view;
-
-        controls.update();
-
-        const vpLeft = Math.floor(windowWidth * left);
-        const vpBottom = Math.floor(windowHeight * bottom);
-        const vpWidth = Math.floor(windowWidth * width);
-        const vpHeight = Math.floor(windowHeight * height);
-
-        renderer.setViewport(vpLeft, vpBottom, vpWidth, vpHeight);
-        renderer.setScissor(vpLeft, vpBottom, vpWidth, vpHeight);
-        renderer.setScissorTest(true);
-        renderer.setClearColor(background);
-
-        camera.aspect = vpWidth / vpHeight;
-        camera.updateProjectionMatrix();
-
-        renderer.render(scene, camera);
-      }
-    }
-
+    // --- bootstrap when DOM is ready ---
+    window.addEventListener('DOMContentLoaded', () => {
+      const app = new ThreeJSApp('container', viewConfigs);
+      app.init();
+    });
   </script>
 
+
 </body>
+
 </html>
