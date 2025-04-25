@@ -13,7 +13,7 @@
         gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
     }
     </script>
-
+    
   <script id="depth-vis-frag" type="x-shader/x-fragment">
     varying vec2 vUv;
     
@@ -28,10 +28,33 @@
         float fragCoordZ = texture2D(tDepth, vUv).x;
         return -perspectiveDepthToViewZ(fragCoordZ, cameraNear, cameraFar) / cameraFar;
     }
+
+    // Convert depth value to rainbow colors
+    vec3 depthToRainbow(float depth) {
+        // Don't show depths beyond threshold
+        if(depth > 0.95) {
+            return vec3(0.0);
+        }
+        
+        float h = (1.0 - depth) * 5.0; // Scale to cover full hue range
+        float i = floor(h);
+        float f = h - i;
+        
+        vec3 color;
+        if(i == 0.0) color = vec3(1.0, f, 0.0);
+        else if(i == 1.0) color = vec3(1.0-f, 1.0, 0.0);
+        else if(i == 2.0) color = vec3(0.0, 1.0, f);
+        else if(i == 3.0) color = vec3(0.0, 1.0-f, 1.0);
+        else if(i == 4.0) color = vec3(f, 0.0, 1.0);
+        else color = vec3(1.0, 0.0, 1.0-f);
+        
+        return color;
+    }
     
     void main() {
         float d = readRealDepth();
-        gl_FragColor = vec4(vec3(1.0 - d), 1.0);
+        vec3 rainbow = depthToRainbow(d);
+        gl_FragColor = vec4(rainbow, 1.0);
     }
     </script>
 
@@ -176,7 +199,13 @@
         this.windowWidth = window.innerWidth;
         this.windowHeight = window.innerHeight;
         this.views = [];
+        
+        // Add raycaster for double-click functionality
+        this.raycaster = new THREE.Raycaster();
+        this.mouse = new THREE.Vector2();
+        this.activeView = null;
       }
+      
       init() {
         this._createScene();
         this._addLight();
@@ -186,6 +215,7 @@
         this._initRenderer();
         this._initStats();
         this._initViewports();
+        this._setupDoubleClickHandler();
 
         // start render loop
         this.renderer.setAnimationLoop(() => this._animate());
@@ -344,6 +374,52 @@
           this.views.push(new Viewport(cfg, this.renderer, this.scene));
         }
       }
+      
+      _setupDoubleClickHandler() {
+        // Add double-click event listener
+        this.container.addEventListener('dblclick', (event) => {
+          // Calculate mouse position in normalized device coordinates (-1 to +1)
+          this.mouse.x = (event.clientX / this.windowWidth) * 2 - 1;
+          this.mouse.y = -(event.clientY / this.windowHeight) * 2 + 1;
+          
+          // Find which viewport was clicked
+          this.activeView = this._getActiveViewport(event.clientX, event.clientY);
+          
+          if (this.activeView) {
+            // Update the raycaster with the camera and mouse position
+            this.raycaster.setFromCamera(this.mouse, this.activeView.camera);
+            
+            // Calculate objects intersecting the ray
+            const intersects = this.raycaster.intersectObjects(this.scene.children, true);
+            
+            if (intersects.length > 0) {
+              // Set the orbit controls target to the intersection point
+              this.activeView.controls.target.copy(intersects[0].point);
+              this.activeView.controls.update();
+              console.log('New orbit center set at:', intersects[0].point);
+            }
+          }
+        });
+      }
+      
+      _getActiveViewport(x, y) {
+        // Determine which viewport contains the click
+        for (let view of this.views) {
+          const { left, bottom, width, height } = view.config;
+          
+          const viewX = Math.floor(this.windowWidth * left);
+          const viewY = Math.floor(this.windowHeight * bottom);
+          const viewWidth = Math.floor(this.windowWidth * width);
+          const viewHeight = Math.floor(this.windowHeight * height);
+          
+          // Check if click is within this viewport
+          if (x >= viewX && x < viewX + viewWidth && 
+              y >= viewY && y < viewY + viewHeight) {
+            return view;
+          }
+        }
+        return null;
+      }
 
       _onWindowResize() {
         const w = window.innerWidth, h = window.innerHeight;
@@ -372,13 +448,13 @@
       {
         left: 0.5, bottom: 0.75, width: 0.25, height: 0.25,
         background: new THREE.Color(0, 0, 0),
-        eye: [1400, 800, 1400], up: [0, 1, 0], fov: 60,
+        eye: [0, 300, 1800], up: [0, 1, 0], fov: 30,
         viewMode: 'depth'
       },
       {
         left: 0.75, bottom: 0.75, width: 0.25, height: 0.25,
         background: new THREE.Color(0, 0, 0),
-        eye: [1400, 800, 1400], up: [0, 1, 0], fov: 60,
+        eye: [0, 300, 1800], up: [0, 1, 0], fov: 30,
       },
     ];
 
