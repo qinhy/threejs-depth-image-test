@@ -57,6 +57,9 @@
     import * as THREE from 'three';
     import Stats from 'three/addons/libs/stats.module.js';
     import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+    import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
+    import { MTLLoader } from 'three/addons/loaders/MTLLoader.js';
+
     // grab shader sources
     const depthVertSrc = document.getElementById('depth-vert').textContent.trim();
     const depthFragSrc = document.getElementById('depth-vis-frag').textContent.trim();
@@ -75,16 +78,16 @@
     // your enhanced Viewport class
     class Viewport {
       constructor(config, renderer, scene) {
-        this.config   = config;
+        this.config = config;
         this.renderer = renderer;
-        this.scene    = scene;
+        this.scene = scene;
 
         // --- camera & controls ---
         this.camera = new THREE.PerspectiveCamera(
           config.fov,
           window.innerWidth / window.innerHeight,
           config.near || 1,
-          config.far  || 10000
+          config.far || 10000
         );
         this.camera.position.fromArray(config.eye);
         this.camera.up.fromArray(config.up);
@@ -94,7 +97,7 @@
         this.controls.enabled = false;        // start disabled
         this.controls.target.set(0, 0, 0);
         this.controls.update();
-        
+
         // const helper = new THREE.CameraHelper( this.camera );
         // this.scene.add( helper );
 
@@ -174,12 +177,12 @@
         this.windowHeight = window.innerHeight;
         this.views = [];
       }
-
       init() {
         this._createScene();
         this._addLight();
         this._addShadows();
-        this._addMeshes();
+        this._loadObjModel();  // Add model loading before meshes
+        // this._addMeshes();
         this._initRenderer();
         this._initStats();
         this._initViewports();
@@ -203,10 +206,52 @@
         this.scene.add(ambientLight);
 
         // Add directional light for shadows and highlights
-        // const directionalLight = new THREE.DirectionalLight(0xffffff, 3);
-        // directionalLight.position.set(0, 0, 10);
-        // this.scene.add(directionalLight);
+        const directionalLight = new THREE.DirectionalLight(0xffffff, 3);
+        directionalLight.position.set(0, 0, 10);
+        this.scene.add(directionalLight);
       }
+
+      _loadObjModel(obj_name = "240206_0641") {
+        // Import MTLLoader and OBJLoader
+        const mtlLoader = new MTLLoader();
+        const objLoader = new OBJLoader();
+
+        try {
+          const _this = this;
+          // Load OBJ file with materials
+          const object = objLoader.load(`./obj/${obj_name}.obj`, 
+          function (object) {
+            // Load and parse MTL file first
+            mtlLoader.load(`./obj/${obj_name}.mtl`, function (materials) {
+              materials.preload();
+              console.log(materials.materials);
+              // Apply the materials to the object
+              object.traverse(function (child) {
+                console.log(child.material?.name);
+                if (child.isMesh) {
+                  const materialName = child.material.name;
+                  // console.log(materialName);
+                  if (materials.materials[materialName]) {
+                    child.material = materials.materials[materialName];
+                  }
+                }
+              });
+              // Update the scene with new materials
+              object.needsUpdate = true;
+            });            
+
+            object.scale.set(100, 100, 100); // Scale as needed
+            object.position.set(0, 0, 0);     // Position as needed
+            // object.rotation.x = -Math.PI / 2; // Rotate as needed
+            // object.position.y += 1000;
+            _this.scene.add(object);
+          });
+
+        } catch (error) {
+          console.error('Error loading model:', error);
+        }
+      }
+
       _addShadows() {
         // build a radial gradient texture
         const size = 128;
@@ -327,7 +372,7 @@
       {
         left: 0.5, bottom: 0.75, width: 0.25, height: 0.25,
         background: new THREE.Color(0, 0, 0),
-        eye: [1400, 800, 1400], up: [0, 1, 0], fov: 60,        
+        eye: [1400, 800, 1400], up: [0, 1, 0], fov: 60,
         viewMode: 'depth'
       },
       {
