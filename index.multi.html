@@ -211,6 +211,7 @@
         this._addLight();
         this._addShadows();
         this._loadObjModel();  // Add model loading before meshes
+        this._loadObjModel('Excavator');
         // this._addMeshes();
         this._initRenderer();
         this._initStats();
@@ -245,42 +246,52 @@
         // Import MTLLoader and OBJLoader
         const mtlLoader = new MTLLoader();
         const objLoader = new OBJLoader();
-
         try {
-          const _this = this;
-          // Load OBJ file with materials
-          const object = objLoader.load(`./obj/${obj_name}.obj`, 
-          function (object) {
-            // Load and parse MTL file first
-            mtlLoader.load(`./obj/${obj_name}.mtl`, function (materials) {
-              materials.preload();
-              console.log(materials.materials);
-              // Apply the materials to the object
-              object.traverse(function (child) {
-                console.log(child.material?.name);
-                if (child.isMesh) {
-                  const materialName = child.material.name;
-                  // console.log(materialName);
-                  if (materials.materials[materialName]) {
-                    child.material = materials.materials[materialName];
+            const _this = this;
+
+            const fallbackMaterial = new THREE.MeshStandardMaterial({ color: 0x888888 }); // Gray material
+
+            // Attempt to load MTL
+            mtlLoader.load(
+              `./obj/${obj_name}.mtl`,
+              function (materials) {
+                // MTL loaded successfully
+                materials.preload();
+                objLoader.setMaterials(materials);
+
+                loadOBJ(materials);
+              },
+              undefined,
+              function (error) {
+                // Error loading MTL — fallback
+                console.warn('MTL load failed. Applying fallback material.', error);
+                loadOBJ(null);
+              }
+            );
+
+            function loadOBJ(materials) {
+              objLoader.load(`./obj/${obj_name}.obj`, function (object) {
+                object.traverse(function (child) {
+                  if (child.isMesh) {
+                    if (!materials || !materials.materials[child.material?.name]) {
+                      child.material = fallbackMaterial;
+                    }
                   }
-                }
+                });
+
+                object.scale.set(100, 100, 100);
+                object.position.set(0, 0, 0);
+                console.log(object);
+                _this.scene.add(object);
               });
-              // Update the scene with new materials
-              object.needsUpdate = true;
-            });            
+            }
 
-            object.scale.set(100, 100, 100); // Scale as needed
-            object.position.set(0, 0, 0);     // Position as needed
-            // object.rotation.x = -Math.PI / 2; // Rotate as needed
-            // object.position.y += 1000;
-            _this.scene.add(object);
-          });
+          } catch (error) {
+            console.error('Error loading model:', error);
+          }
 
-        } catch (error) {
-          console.error('Error loading model:', error);
-        }
-      }
+        };
+
 
       _addShadows() {
         // build a radial gradient texture
