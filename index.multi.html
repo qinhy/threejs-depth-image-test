@@ -106,7 +106,7 @@
     import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
     import { MTLLoader } from 'three/addons/loaders/MTLLoader.js';
     import { PLYLoader } from 'three/addons/loaders/PLYLoader.js';
-    
+
     // grab shader sources
     const depthVertSrc = document.getElementById('depth-vert').textContent.trim();
     const depthFragColorSrc = document.getElementById('depth-vis-color-frag').textContent.trim();
@@ -129,6 +129,14 @@
           config.near,
           config.far,
         );
+
+        if (config.layers) {
+          this.camera.layers.disableAll();
+          config.layers.forEach(layer => {
+            this.camera.layers.enable(layer);
+          });
+        }
+
         this.camera.position.fromArray(config.eye);
         this.camera.up.fromArray(config.up);
 
@@ -164,25 +172,25 @@
         this.quad = new THREE.Mesh(
           new THREE.PlaneGeometry(2, 2),
 
-          this.viewMode === "depth.gray" ? 
-                new THREE.ShaderMaterial({
-                            vertexShader: depthVertSrc,
-                            fragmentShader: depthFragGraySrc,
-                            uniforms: {
-                              tDepth: { value: null },
-                            cameraNear: {value:config.near},
-                            cameraFar: {value:config.far},
-                            }
-                          }) : 
-                new THREE.ShaderMaterial({
-                          vertexShader: depthVertSrc,
-                          fragmentShader: depthFragColorSrc,
-                          uniforms: {
-                            tDepth: { value: null },
-                            cameraNear: {value:config.near},
-                            cameraFar: {value:config.far},
-                          }
-                        }),
+          this.viewMode === "depth.gray" ?
+            new THREE.ShaderMaterial({
+              vertexShader: depthVertSrc,
+              fragmentShader: depthFragGraySrc,
+              uniforms: {
+                tDepth: { value: null },
+                cameraNear: { value: config.near },
+                cameraFar: { value: config.far },
+              }
+            }) :
+            new THREE.ShaderMaterial({
+              vertexShader: depthVertSrc,
+              fragmentShader: depthFragColorSrc,
+              uniforms: {
+                tDepth: { value: null },
+                cameraNear: { value: config.near },
+                cameraFar: { value: config.far },
+              }
+            }),
         );
         this.postScene.add(this.quad);
       }
@@ -278,14 +286,14 @@
         this.scene.add(directionalLight);
       }
 
-      loadObjModel(obj_name = "240206_0641",scale=1,rotx=0.0) {
+      loadObjModel(obj_name = "240206_0641", scale = 1, rotx = 0.0, color = 0x888888, layer = 0) {
         // Import MTLLoader and OBJLoader
         const mtlLoader = new MTLLoader();
         const objLoader = new OBJLoader();
         try {
           const _this = this;
 
-          const fallbackMaterial = new THREE.MeshStandardMaterial({ color: 0x888888 }); // Gray material
+          const fallbackMaterial = new THREE.MeshStandardMaterial({ color: color }); // Gray material
 
           // Attempt to load MTL
           mtlLoader.load(
@@ -312,6 +320,7 @@
                   if (!materials || !materials.materials[child.material?.name]) {
                     child.material = fallbackMaterial;
                   }
+                  child.layers.set(layer);
                 }
               });
 
@@ -329,16 +338,16 @@
         return this;
       };
 
-      loadPlyModel(ply_name="bunny",scale=1) {
-          const loader = new PLYLoader();
-          loader.load(`./ply/${ply_name}.ply`, (geometry) => {
-              geometry.computeVertexNormals();
-              const material = new THREE.MeshBasicMaterial({ color: 0x6699ff, wireframe: false });
-              const mesh = new THREE.Mesh(geometry, material);
-              mesh.scale.set(scale, scale, scale);
-              // mesh.rotation.y = Math.PI;
-              this.scene.add(mesh);
-          });
+      loadPlyModel(ply_name = "bunny", scale = 1) {
+        const loader = new PLYLoader();
+        loader.load(`./ply/${ply_name}.ply`, (geometry) => {
+          geometry.computeVertexNormals();
+          const material = new THREE.MeshBasicMaterial({ color: 0x6699ff, wireframe: false });
+          const mesh = new THREE.Mesh(geometry, material);
+          mesh.scale.set(scale, scale, scale);
+          // mesh.rotation.y = Math.PI;
+          this.scene.add(mesh);
+        });
         return this;
       }
 
@@ -495,18 +504,22 @@
       {
         left: 0, bottom: 0, width: 1.0, height: 1.0,
         background: new THREE.Color(0, 0, 0),
-        eye: [0, 3, 18], up: [0, 0, 1], fov: 30, near:0.05, far:10,
+        eye: [0, 3, 18], up: [0, 0, 1], fov: 30, near: 0.05, far: 20,
+        layers: [0, 1, 2],
       },
       {
         left: 0.5, bottom: 0.75, width: 0.25, height: 0.25,
         background: new THREE.Color(0, 0, 0),
-        eye: [0, 3, 18], up: [0, 0, 1], fov: 30, near:0.05, far:10,
+        eye: [0, 3, 18], up: [0, 0, 1], fov: 30, near: 0.05, far: 20,
+        layers: [1],
         viewMode: 'depth.gray'
       },
       {
         left: 0.75, bottom: 0.75, width: 0.25, height: 0.25,
         background: new THREE.Color(0, 0, 0),
-        eye: [0, 3, 18], up: [0, 0, 1], fov: 30, near:0.05, far:10,
+        eye: [0, 3, 18], up: [0, 0, 1], fov: 30, near: 0.05, far: 20,
+        layers: [0, 1, 2],
+        viewMode: 'depth.gray'
       },
     ];
 
@@ -516,8 +529,8 @@
       app.init()
         // .loadObjModel("simplestreet",0.05,0.5*Math.PI)
         // .loadPlyModel("bunny",1)
-        // .loadObjModel("field",1)
-        .loadObjModel("field2",1)
+        .loadObjModel("field", 1, 0.0, 0x888888, 0)
+        .loadObjModel("field2", 1, 0.0, 0x888888, 1)
         ;
     });
   </script>
